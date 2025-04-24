@@ -27,6 +27,8 @@
 #include "config_components.h"
 
 #include <time.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "avformat.h"
 #include "internal.h"
@@ -67,6 +69,7 @@ typedef enum {
 
 #define SEGMENT_LIST_FLAG_CACHE 1
 #define SEGMENT_LIST_FLAG_LIVE  2
+#define SEGMENT_LIST_FLAG_DELETE 4
 
 typedef struct SegmentContext {
     const AVClass *class;  /**< Class for private options. */
@@ -378,18 +381,38 @@ static int segment_end(AVFormatContext *s, int write_trailer, int is_last)
             /* append new element */
             memcpy(entry, &seg->cur_entry, sizeof(*entry));
             entry->filename = av_strdup(entry->filename);
-            if (!seg->segment_list_entries)
+            if (!seg->segment_list_entries) {
                 seg->segment_list_entries = seg->segment_list_entries_end = entry;
-            else
+            } else {
                 seg->segment_list_entries_end->next = entry;
+            }
             seg->segment_list_entries_end = entry;
 
             /* drop first item */
             if (seg->list_size && seg->segment_count >= seg->list_size) {
-                entry = seg->segment_list_entries;
-                seg->segment_list_entries = seg->segment_list_entries->next;
-                av_freep(&entry->filename);
-                av_freep(&entry);
+                SegmentListEntry *old = seg->segment_list_entries;
+                /* przesuwamy head listy */
+                seg->segment_list_entries = old->next;
+
+                /* jeżeli mamy flagę delete, kasujemy plik .ts */
+                if (seg->list_flags & SEGMENT_LIST_FLAG_DELETE) {
+                    char del_path[1024];
+                    char *slash = strrchr(seg->list, '/');
+                    int dirlen = slash ? (slash - seg->list) : 0;
+                    if (dirlen > 0) {
+                        /* katalog + nazwa pliku */
+                        snprintf(del_path, sizeof(del_path),
+                                    "%.*s/%s", dirlen, seg->list, old->filename);
+                    } else {
+                        /* jeżeli seg->list bez ścieżki */
+                        snprintf(del_path, sizeof(del_path),
+                                    "%s", old->filename);
+                    }
+                    unlink(del_path);
+                }
+                /* zwalniamy node z listy */
+                av_freep(&old->filename);
+                av_freep(&old);
             }
 
             if ((ret = segment_list_open(s)) < 0)
@@ -1043,6 +1066,7 @@ static const AVOption options[] = {
     { "segment_list_flags","set flags affecting segment list generation", OFFSET(list_flags), AV_OPT_TYPE_FLAGS, {.i64 = SEGMENT_LIST_FLAG_CACHE }, 0, UINT_MAX, E, .unit = "list_flags"},
     { "cache",             "allow list caching",                                    0, AV_OPT_TYPE_CONST, {.i64 = SEGMENT_LIST_FLAG_CACHE }, INT_MIN, INT_MAX,   E, .unit = "list_flags"},
     { "live",              "enable live-friendly list generation (useful for HLS)", 0, AV_OPT_TYPE_CONST, {.i64 = SEGMENT_LIST_FLAG_LIVE }, INT_MIN, INT_MAX,    E, .unit = "list_flags"},
+    { "delete",            "delete old segment files when trimming list",           0, AV_OPT_TYPE_CONST, {.i64 = SEGMENT_LIST_FLAG_DELETE}, INT_MIN, INT_MAX,    E, .unit = "list_flags"},
 
     { "segment_list_size", "set the maximum number of playlist entries", OFFSET(list_size), AV_OPT_TYPE_INT,  {.i64 = 0},     0, INT_MAX, E },
 

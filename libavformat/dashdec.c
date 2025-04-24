@@ -154,6 +154,7 @@ typedef struct DASHContext {
     AVDictionary *avio_opts;
     int max_url_size;
     char *cenc_decryption_key;
+    char *cenc_decryption_keys;
 
     /* Flags for init section*/
     int is_init_section_common_video;
@@ -1904,6 +1905,8 @@ static int reopen_demux_for_component(AVFormatContext *s, struct representation 
 
     if (c->cenc_decryption_key)
         av_dict_set(&in_fmt_opts, "decryption_key", c->cenc_decryption_key, 0);
+    if (c->cenc_decryption_keys)
+        av_dict_set(&in_fmt_opts, "decryption_keys", c->cenc_decryption_keys, 0);
 
     // provide additional information from mpd if available
     ret = avformat_open_input(&pls->ctx, "", in_fmt, &in_fmt_opts); //pls->init_section->url
@@ -2025,6 +2028,21 @@ static int dash_read_header(AVFormatContext *s)
 
     if ((ret = ffio_copy_url_options(s->pb, &c->avio_opts)) < 0)
         return ret;
+
+    char *location = NULL;
+    if (av_opt_get(s->pb, "location", AV_OPT_SEARCH_CHILDREN, (uint8_t**)&location) < 0) {
+        av_log(s, AV_LOG_WARNING, "Failed to get location from AVIOContext.\n");
+    } else {
+        // location başarılı bir şekilde alındıysa ve s->url zaten location ile aynı değilse, s->url güncellenir.
+        if (!s->url || strcmp(s->url, location) != 0) {
+            av_freep(&s->url); // mevcut s->url'nin hafızasını serbest bırak
+            s->url = location; // s->url'yi yeni location ile güncelle
+            av_log(s, AV_LOG_INFO, "URL updated to: %s\n", s->url);
+        } else {
+            // Eğer s->url zaten location ile aynıysa, location'ın hafızasını serbest bırak
+            av_freep(&location);
+        }
+    }
 
     if ((ret = parse_manifest(s, s->url, s->pb)) < 0)
         return ret;
@@ -2343,9 +2361,10 @@ static int dash_probe(const AVProbeData *p)
 static const AVOption dash_options[] = {
     {"allowed_extensions", "List of file extensions that dash is allowed to access",
         OFFSET(allowed_extensions), AV_OPT_TYPE_STRING,
-        {.str = "aac,m4a,m4s,m4v,mov,mp4,webm,ts"},
+        {.str = "aac,m4a,m4s,m4v,mov,mp4,webm,ts,dash"},
         INT_MIN, INT_MAX, FLAGS},
     { "cenc_decryption_key", "Media decryption key (hex)", OFFSET(cenc_decryption_key), AV_OPT_TYPE_STRING, {.str = NULL}, INT_MIN, INT_MAX, .flags = FLAGS },
+    { "cenc_decryption_keys", "Media decryption keys by KID (hex)", OFFSET(cenc_decryption_keys), AV_OPT_TYPE_STRING, {.str = NULL}, INT_MIN, INT_MAX, .flags = FLAGS },
     {NULL}
 };
 
